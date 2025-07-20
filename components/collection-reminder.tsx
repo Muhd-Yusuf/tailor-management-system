@@ -3,316 +3,341 @@
 import type React from "react"
 
 import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Clock, AlertTriangle, Calendar, User, Phone, X, MessageCircle } from "lucide-react"
-import { format, isToday, isTomorrow, addDays } from "date-fns"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Separator } from "@/components/ui/separator"
+import { Bell, Clock, Calendar, X, ChevronDown, ChevronUp, AlertTriangle, CheckCircle, Eye } from "lucide-react"
+import { format, isToday, isTomorrow, isPast, differenceInDays } from "date-fns"
 import { cn } from "@/lib/utils"
-import { useToast, ToastManager } from "./enhanced-toast"
-
-interface Customer {
-  _id: string
-  name: string
-  phone: string
-  email?: string
-}
+import Link from "next/link"
+import { WhatsAppContact } from "./whatsapp-contact"
+import { showCollectionReminderToast } from "./enhanced-toast"
 
 interface Order {
-  _id: string
-  items: Array<{
-    type: string
-    description: string
-    price: number
-    status: string
-  }>
-  totalAmount: number
-  paidAmount: number
-  status: "pending" | "in-progress" | "completed"
+  id: string
+  customerId: string
+  customerName: string
+  items: OrderItem[]
+  status: "pending" | "in_progress" | "ready" | "completed" | "cancelled"
   orderDate: string
   collectionDate: string
+  totalAmount: number
+  paidAmount: number
   notes?: string
 }
 
-interface CollectionItem {
-  customer: Customer
-  order: Order
+interface OrderItem {
+  id: string
+  type: string
+  description: string
+  measurements: Record<string, number>
+  price: number
+  status: "pending" | "cutting" | "sewing" | "finishing" | "ready"
 }
 
 interface CollectionReminderProps {
-  overdueCollections: CollectionItem[]
-  collectionsToday: CollectionItem[]
+  orders: Order[]
 }
 
-export function CollectionReminder({ overdueCollections, collectionsToday }: CollectionReminderProps) {
-  const router = useRouter()
-  const { addToast } = useToast()
-  const toastManager = ToastManager()
+interface GroupedReminders {
+  overdue: Order[]
+  today: Order[]
+  tomorrow: Order[]
+  upcoming: Order[]
+}
+
+export function CollectionReminder({ orders }: CollectionReminderProps) {
   const [dismissedReminders, setDismissedReminders] = useState<Set<string>>(new Set())
-  const [upcomingCollections, setUpcomingCollections] = useState<CollectionItem[]>([])
+  const [isExpanded, setIsExpanded] = useState(true)
+  const [hasShownToast, setHasShownToast] = useState(false)
 
-  // Calculate upcoming collections (tomorrow and next 3 days)
+  // Group orders by collection urgency
+  const groupedReminders: GroupedReminders = orders.reduce(
+    (acc, order) => {
+      if (dismissedReminders.has(order.id)) return acc
+
+      const collectionDate = new Date(order.collectionDate)
+
+      if (isPast(collectionDate) && !isToday(collectionDate)) {
+        acc.overdue.push(order)
+      } else if (isToday(collectionDate)) {
+        acc.today.push(order)
+      } else if (isTomorrow(collectionDate)) {
+        acc.tomorrow.push(order)
+      } else if (differenceInDays(collectionDate, new Date()) <= 7) {
+        acc.upcoming.push(order)
+      }
+
+      return acc
+    },
+    { overdue: [], today: [], tomorrow: [], upcoming: [] } as GroupedReminders,
+  )
+
+  const totalReminders = Object.values(groupedReminders).reduce((sum, group) => sum + group.length, 0)
+
+  // Show toast notification for urgent reminders
   useEffect(() => {
-    const tomorrow = addDays(new Date(), 1)
-    const threeDaysFromNow = addDays(new Date(), 3)
+    if (!hasShownToast && (groupedReminders.overdue.length > 0 || groupedReminders.today.length > 0)) {
+      const urgentCount = groupedReminders.overdue.length + groupedReminders.today.length
+      if (urgentCount > 0) {
+        showCollectionReminderToast(
+          urgentCount === 1
+            ? (groupedReminders.overdue[0] || groupedReminders.today[0]).customerName
+            : `${urgentCount} customers`,
+          urgentCount === 1 ? (groupedReminders.overdue[0] || groupedReminders.today[0]).customerId : "",
+        )
+        setHasShownToast(true)
+      }
+    }
+  }, [groupedReminders, hasShownToast])
 
-    // This would typically come from props or API, but for now we'll simulate
-    const upcoming: CollectionItem[] = []
-    setUpcomingCollections(upcoming)
-  }, [])
-
-  const handleCustomerClick = (customerId: string, customerName: string) => {
-    // Show toast notification
-    toastManager.showCollectionReminder(customerName, customerId)
-
-    // Navigate to customer details
-    router.push(`/tailor/customer/${customerId}`)
-  }
-
-  const handleDismissReminder = (customerId: string, orderId: string, e: React.MouseEvent) => {
-    e.stopPropagation() // Prevent triggering the click handler
-    const reminderKey = `${customerId}-${orderId}`
-    setDismissedReminders((prev) => new Set([...prev, reminderKey]))
-  }
-
-  const handleWhatsAppContact = (phone: string, customerName: string, e: React.MouseEvent) => {
+  const dismissReminder = (orderId: string, e: React.MouseEvent) => {
+    e.preventDefault()
     e.stopPropagation()
-    const message = encodeURIComponent(
-      `Hello ${customerName}, your order is ready for collection. Please let us know when you can pick it up. Thank you!`,
-    )
-    window.open(`https://wa.me/${phone.replace(/\D/g, "")}?text=${message}`, "_blank")
+    setDismissedReminders((prev) => new Set([...prev, orderId]))
   }
 
-  const isReminderDismissed = (customerId: string, orderId: string) => {
-    return dismissedReminders.has(`${customerId}-${orderId}`)
+  const getUrgencyColor = (order: Order) => {
+    const collectionDate = new Date(order.collectionDate)
+
+    if (isPast(collectionDate) && !isToday(collectionDate)) {
+      return "border-red-500 bg-red-50 dark:bg-red-900/20"
+    } else if (isToday(collectionDate)) {
+      return "border-orange-500 bg-orange-50 dark:bg-orange-900/20"
+    } else if (isTomorrow(collectionDate)) {
+      return "border-yellow-500 bg-yellow-50 dark:bg-yellow-900/20"
+    }
+    return "border-blue-500 bg-blue-50 dark:bg-blue-900/20"
   }
 
-  const getUrgencyColor = (collectionDate: string) => {
-    const date = new Date(collectionDate)
-    const today = new Date()
+  const getUrgencyIcon = (order: Order) => {
+    const collectionDate = new Date(order.collectionDate)
 
-    if (date < today) return "text-red-600 dark:text-red-400"
-    if (isToday(date)) return "text-orange-600 dark:text-orange-400"
-    if (isTomorrow(date)) return "text-yellow-600 dark:text-yellow-400"
-    return "text-blue-600 dark:text-blue-400"
+    if (isPast(collectionDate) && !isToday(collectionDate)) {
+      return <AlertTriangle className="h-4 w-4 text-red-500" />
+    } else if (isToday(collectionDate)) {
+      return <Clock className="h-4 w-4 text-orange-500" />
+    } else if (isTomorrow(collectionDate)) {
+      return <Calendar className="h-4 w-4 text-yellow-500" />
+    }
+    return <CheckCircle className="h-4 w-4 text-blue-500" />
   }
 
-  const getUrgencyBadge = (collectionDate: string) => {
-    const date = new Date(collectionDate)
-    const today = new Date()
-
-    if (date < today) return <Badge className="status-overdue">Overdue</Badge>
-    if (isToday(date)) return <Badge className="status-pending">Today</Badge>
-    if (isTomorrow(date)) return <Badge className="bg-yellow-500">Tomorrow</Badge>
-    return <Badge variant="outline">Upcoming</Badge>
-  }
-
-  // Filter out dismissed reminders
-  const activeOverdueCollections = overdueCollections.filter(
-    (item) => !isReminderDismissed(item.customer._id, item.order._id),
+  const ReminderCard = ({ order, label }: { order: Order; label: string }) => (
+    <Link
+      href={`/tailor/customer/${order.customerId}`}
+      className="block transition-all duration-200 hover:scale-[1.02] focus:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 rounded-lg"
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          window.location.href = `/tailor/customer/${order.customerId}`
+        }
+      }}
+      tabIndex={0}
+      role="button"
+      aria-label={`View details for ${order.customerName}'s order`}
+    >
+      <div
+        className={cn(
+          "glass-card p-4 rounded-lg border-l-4 cursor-pointer transition-all duration-200 hover:shadow-lg",
+          getUrgencyColor(order),
+        )}
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-3 flex-1">
+            {getUrgencyIcon(order)}
+            <Avatar className="h-8 w-8">
+              <AvatarImage src="/placeholder-user.jpg" alt={order.customerName} />
+              <AvatarFallback className="bg-blue-100 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400 text-xs">
+                {order.customerName
+                  .split(" ")
+                  .map((n) => n[0])
+                  .join("")}
+              </AvatarFallback>
+            </Avatar>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <h4 className="font-semibold text-gray-900 dark:text-gray-100 text-sm truncate">
+                  {order.customerName}
+                </h4>
+                <Badge variant="outline" className="text-xs">
+                  {label}
+                </Badge>
+              </div>
+              <div className="text-xs text-gray-600 dark:text-gray-400 space-y-1">
+                <p>
+                  Order #{order.id} • {order.items.length} item(s)
+                </p>
+                <p className="flex items-center gap-1">
+                  <Calendar className="h-3 w-3" />
+                  Collection: {format(new Date(order.collectionDate), "MMM dd, yyyy")}
+                </p>
+                <p className="font-medium">
+                  ${order.totalAmount}
+                  {order.totalAmount > order.paidAmount && (
+                    <span className="text-red-600 dark:text-red-400 ml-1">
+                      (${order.totalAmount - order.paidAmount} due)
+                    </span>
+                  )}
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            <WhatsAppContact
+              phone="+1234567890" // This should come from customer data
+              message={`Hi ${order.customerName}, your order #${order.id} is ready for collection!`}
+              size="sm"
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={(e) => dismissReminder(order.id, e)}
+              className="h-6 w-6 p-0 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+              aria-label="Dismiss reminder"
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+        </div>
+      </div>
+    </Link>
   )
 
-  const activeTodayCollections = collectionsToday.filter(
-    (item) => !isReminderDismissed(item.customer._id, item.order._id),
-  )
-
-  const totalActiveReminders = activeOverdueCollections.length + activeTodayCollections.length
-
-  if (totalActiveReminders === 0) {
+  if (totalReminders === 0) {
     return null
   }
 
   return (
-    <div className="mb-8 space-y-4">
-      {/* Summary Alert */}
-      <Alert
-        className={cn(
-          "glass-card border-l-4",
-          activeOverdueCollections.length > 0
-            ? "border-l-red-500 bg-red-50/50 dark:bg-red-900/20"
-            : "border-l-orange-500 bg-orange-50/50 dark:bg-orange-900/20",
-        )}
-      >
-        <AlertTriangle className="h-4 w-4" />
-        <AlertDescription className="text-themed">
-          <strong>Collection Reminders:</strong> {activeOverdueCollections.length} overdue,{" "}
-          {activeTodayCollections.length} due today
-        </AlertDescription>
-      </Alert>
-
-      {/* Overdue Collections */}
-      {activeOverdueCollections.length > 0 && (
-        <Card className="glass-card border-red-200 dark:border-red-800">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-red-600 dark:text-red-400">
-              <AlertTriangle className="h-5 w-5" />
-              Overdue Collections ({activeOverdueCollections.length})
+    <Card className="glass-card border-l-4 border-l-blue-500 transition-theme">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Bell className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+            <CardTitle className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Collection Reminders
             </CardTitle>
-            <CardDescription>These orders are past their collection date and need immediate attention.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {activeOverdueCollections.map((item) => (
-              <div
-                key={`${item.customer._id}-${item.order._id}`}
-                className="clickable-notification glass-card-dark p-4 cursor-pointer"
-                onClick={() => handleCustomerClick(item.customer._id, item.customer.name)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault()
-                    handleCustomerClick(item.customer._id, item.customer.name)
-                  }
-                }}
-                tabIndex={0}
-                role="button"
-                aria-label={`View details for ${item.customer.name}'s overdue order`}
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <User className="h-4 w-4 text-themed-muted" />
-                      <span className="font-semibold text-themed">{item.customer.name}</span>
-                      {getUrgencyBadge(item.order.collectionDate)}
-                    </div>
+            <Badge variant="secondary" className="bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400">
+              {totalReminders}
+            </Badge>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setIsExpanded(!isExpanded)}
+            className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+          >
+            {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </Button>
+        </div>
+        <CardDescription className="text-gray-600 dark:text-gray-400">
+          Click on any reminder to view customer details and manage orders
+        </CardDescription>
+      </CardHeader>
 
-                    <div className="space-y-1 text-sm text-themed-muted">
-                      <div className="flex items-center gap-2">
-                        <Phone className="h-3 w-3" />
-                        <span>{item.customer.phone}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Calendar className="h-3 w-3" />
-                        <span className={getUrgencyColor(item.order.collectionDate)}>
-                          Due: {format(new Date(item.order.collectionDate), "MMM dd, yyyy")}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Clock className="h-3 w-3" />
-                        <span>
-                          {Math.ceil(
-                            (new Date().getTime() - new Date(item.order.collectionDate).getTime()) /
-                              (1000 * 60 * 60 * 24),
-                          )}{" "}
-                          days overdue
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="mt-2 text-sm">
-                      <span className="text-themed-muted">Items: </span>
-                      <span className="text-themed">{item.order.items.map((item) => item.type).join(", ")}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 ml-4">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(e) => handleWhatsAppContact(item.customer.phone, item.customer.name, e)}
-                      className="text-green-600 hover:text-green-700 hover:bg-green-50 dark:hover:bg-green-900/20"
-                      title="Contact via WhatsApp"
-                    >
-                      <MessageCircle className="h-4 w-4" />
-                    </Button>
-
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(e) => handleDismissReminder(item.customer._id, item.order._id, e)}
-                      className="text-themed-muted hover:text-themed"
-                      title="Dismiss reminder"
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
+      {isExpanded && (
+        <CardContent className="space-y-4">
+          {/* Overdue Orders */}
+          {groupedReminders.overdue.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-red-500" />
+                <h3 className="font-semibold text-red-700 dark:text-red-400 text-sm">
+                  Overdue ({groupedReminders.overdue.length})
+                </h3>
               </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Today's Collections */}
-      {activeTodayCollections.length > 0 && (
-        <Card className="glass-card border-orange-200 dark:border-orange-800">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-orange-600 dark:text-orange-400">
-              <Clock className="h-5 w-5" />
-              Due Today ({activeTodayCollections.length})
-            </CardTitle>
-            <CardDescription>These orders are scheduled for collection today.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {activeTodayCollections.map((item) => (
-              <div
-                key={`${item.customer._id}-${item.order._id}`}
-                className="clickable-notification glass-card-dark p-4 cursor-pointer"
-                onClick={() => handleCustomerClick(item.customer._id, item.customer.name)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault()
-                    handleCustomerClick(item.customer._id, item.customer.name)
-                  }
-                }}
-                tabIndex={0}
-                role="button"
-                aria-label={`View details for ${item.customer.name}'s order due today`}
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <User className="h-4 w-4 text-themed-muted" />
-                      <span className="font-semibold text-themed">{item.customer.name}</span>
-                      {getUrgencyBadge(item.order.collectionDate)}
-                    </div>
-
-                    <div className="space-y-1 text-sm text-themed-muted">
-                      <div className="flex items-center gap-2">
-                        <Phone className="h-3 w-3" />
-                        <span>{item.customer.phone}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Calendar className="h-3 w-3" />
-                        <span className={getUrgencyColor(item.order.collectionDate)}>
-                          Due: {format(new Date(item.order.collectionDate), "MMM dd, yyyy")}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="mt-2 text-sm">
-                      <span className="text-themed-muted">Items: </span>
-                      <span className="text-themed">{item.order.items.map((item) => item.type).join(", ")}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 ml-4">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(e) => handleWhatsAppContact(item.customer.phone, item.customer.name, e)}
-                      className="text-green-600 hover:text-green-700 hover:bg-green-50 dark:hover:bg-green-900/20"
-                      title="Contact via WhatsApp"
-                    >
-                      <MessageCircle className="h-4 w-4" />
-                    </Button>
-
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(e) => handleDismissReminder(item.customer._id, item.order._id, e)}
-                      className="text-themed-muted hover:text-themed"
-                      title="Dismiss reminder"
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
+              <div className="space-y-2">
+                {groupedReminders.overdue.map((order) => (
+                  <ReminderCard key={order.id} order={order} label="Overdue" />
+                ))}
               </div>
-            ))}
-          </CardContent>
-        </Card>
+            </div>
+          )}
+
+          {/* Today's Collections */}
+          {groupedReminders.today.length > 0 && (
+            <div className="space-y-2">
+              {groupedReminders.overdue.length > 0 && <Separator />}
+              <div className="flex items-center gap-2">
+                <Clock className="h-4 w-4 text-orange-500" />
+                <h3 className="font-semibold text-orange-700 dark:text-orange-400 text-sm">
+                  Due Today ({groupedReminders.today.length})
+                </h3>
+              </div>
+              <div className="space-y-2">
+                {groupedReminders.today.map((order) => (
+                  <ReminderCard key={order.id} order={order} label="Today" />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Tomorrow's Collections */}
+          {groupedReminders.tomorrow.length > 0 && (
+            <div className="space-y-2">
+              {(groupedReminders.overdue.length > 0 || groupedReminders.today.length > 0) && <Separator />}
+              <div className="flex items-center gap-2">
+                <Calendar className="h-4 w-4 text-yellow-500" />
+                <h3 className="font-semibold text-yellow-700 dark:text-yellow-400 text-sm">
+                  Due Tomorrow ({groupedReminders.tomorrow.length})
+                </h3>
+              </div>
+              <div className="space-y-2">
+                {groupedReminders.tomorrow.map((order) => (
+                  <ReminderCard key={order.id} order={order} label="Tomorrow" />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Upcoming Collections */}
+          {groupedReminders.upcoming.length > 0 && (
+            <div className="space-y-2">
+              {(groupedReminders.overdue.length > 0 ||
+                groupedReminders.today.length > 0 ||
+                groupedReminders.tomorrow.length > 0) && <Separator />}
+              <div className="flex items-center gap-2">
+                <CheckCircle className="h-4 w-4 text-blue-500" />
+                <h3 className="font-semibold text-blue-700 dark:text-blue-400 text-sm">
+                  Upcoming ({groupedReminders.upcoming.length})
+                </h3>
+              </div>
+              <div className="space-y-2">
+                {groupedReminders.upcoming.map((order) => (
+                  <ReminderCard key={order.id} order={order} label="Upcoming" />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Quick Actions */}
+          <Separator />
+          <div className="flex flex-wrap gap-2">
+            <Link href="/tailor/dashboard">
+              <Button variant="outline" size="sm" className="glass-button bg-transparent">
+                <Eye className="h-3 w-3 mr-1" />
+                View All Orders
+              </Button>
+            </Link>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const allOrderIds = Object.values(groupedReminders)
+                  .flat()
+                  .map((order) => order.id)
+                setDismissedReminders((prev) => new Set([...prev, ...allOrderIds]))
+              }}
+              className="glass-button"
+            >
+              <X className="h-3 w-3 mr-1" />
+              Dismiss All
+            </Button>
+          </div>
+        </CardContent>
       )}
-    </div>
+    </Card>
   )
 }
