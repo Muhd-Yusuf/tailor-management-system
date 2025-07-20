@@ -11,7 +11,7 @@ const inter = Inter({ subsets: ["latin"] })
 export const metadata: Metadata = {
   title: "TailorCraft Pro - Modern Tailor Management System",
   description: "Professional tailor management system with modern design for customer measurements and orders",
-    generator: 'v0.dev'
+  generator: "v0.dev",
 }
 
 // Inline script to prevent theme flash
