@@ -1,428 +1,500 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { useAuth } from "@/components/auth-provider"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Calendar } from "@/components/ui/calendar"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Separator } from "@/components/ui/separator"
 import { CollectionReminder } from "@/components/collection-reminder"
-import { ThemeToggle } from "@/components/theme-toggle"
-import { showToast } from "@/components/enhanced-toast"
-import { Plus, Users, DollarSign, Clock, LogOut, Search, Bell, Filter, TrendingUp } from "lucide-react"
-import Link from "next/link"
+import { WhatsAppContact } from "@/components/whatsapp-contact"
+import { showCollectionReminderToast } from "@/components/enhanced-toast"
+import { Users, Package, Clock, TrendingUp, Search, Plus, Eye, Edit, CalendarIcon, X } from "lucide-react"
+import { format } from "date-fns"
+import { cn } from "@/lib/utils"
 
 interface Customer {
   _id: string
   name: string
   phone: string
-  address?: string
+  email?: string
   orderDate: string
-  expectedDate: string
-  paymentStatus: "not_paid" | "paid" | "advance"
-  amount: number
-  advanceAmount?: number
+  collectionDate: string
+  items: Array<{
+    type: string
+    description: string
+    measurements: Record<string, number>
+    price: number
+    status: "pending" | "in-progress" | "completed" | "collected"
+  }>
+  totalAmount: number
+  amountPaid: number
+  status: "pending" | "in-progress" | "completed" | "collected"
+  notes?: string
+}
+
+interface DateFilter {
+  mode: "all" | "order" | "collection"
+  startDate?: Date
+  endDate?: Date
 }
 
 export default function TailorDashboard() {
-  const { user, logout, loading } = useAuth()
   const router = useRouter()
   const [customers, setCustomers] = useState<Customer[]>([])
   const [filteredCustomers, setFilteredCustomers] = useState<Customer[]>([])
+  const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState("")
-  const [filterStatus, setFilterStatus] = useState("all")
-  const [stats, setStats] = useState({
-    totalCustomers: 0,
-    pendingOrders: 0,
-    totalRevenue: 0,
-    advancePayments: 0,
-  })
+  const [statusFilter, setStatusFilter] = useState<string>("all")
+  const [dateFilter, setDateFilter] = useState<DateFilter>({ mode: "all" })
+  const [showDateFilter, setShowDateFilter] = useState(false)
+
+  // Stats
+  const totalCustomers = customers.length
+  const pendingOrders = customers.filter((c) => c.status === "pending").length
+  const inProgressOrders = customers.filter((c) => c.status === "in-progress").length
+  const readyForCollection = customers.filter((c) => c.status === "completed").length
+  const totalRevenue = customers.reduce((sum, c) => sum + c.amountPaid, 0)
 
   useEffect(() => {
-    if (!loading && (!user || user.role !== "tailor" || user.status !== "approved")) {
-      router.push("/login")
-      return
-    }
-    if (user?.role === "tailor" && user.status === "approved") {
-      fetchCustomers()
-    }
-  }, [user, loading, router])
+    fetchCustomers()
+  }, [])
 
   useEffect(() => {
     filterCustomers()
-  }, [customers, searchTerm, filterStatus])
+  }, [customers, searchTerm, statusFilter, dateFilter])
 
   const fetchCustomers = async () => {
     try {
-      const token = localStorage.getItem("token")
-      const response = await fetch("/api/tailor/customers", {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-
+      const response = await fetch("/api/tailor/customers")
       if (response.ok) {
         const data = await response.json()
         setCustomers(data)
-
-        // Calculate stats
-        const totalCustomers = data.length
-        const pendingOrders = data.filter(
-          (c: Customer) => new Date(c.expectedDate) > new Date() && c.paymentStatus !== "paid",
-        ).length
-        const totalRevenue = data
-          .filter((c: Customer) => c.paymentStatus === "paid")
-          .reduce((sum: number, c: Customer) => sum + c.amount, 0)
-        const advancePayments = data
-          .filter((c: Customer) => c.paymentStatus === "advance")
-          .reduce((sum: number, c: Customer) => sum + (c.advanceAmount || 0), 0)
-
-        setStats({ totalCustomers, pendingOrders, totalRevenue, advancePayments })
-
-        // Show welcome toast for first-time users
-        if (data.length === 0) {
-          showToast({
-            type: "info",
-            title: "🎉 Welcome to TailorCraft Pro!",
-            description: "Start by adding your first customer to begin managing your business",
-            duration: 6000,
-          })
-        }
       }
     } catch (error) {
-      console.error("Failed to fetch customers:", error)
-      showToast({
-        type: "error",
-        title: "🌐 Connection Error",
-        description: "Failed to load customer data. Please refresh the page.",
-        duration: 5000,
-      })
+      console.error("Error fetching customers:", error)
+    } finally {
+      setLoading(false)
     }
   }
 
   const filterCustomers = () => {
     let filtered = customers
 
-    // Search filter
-    if (searchTerm.trim()) {
-      const searchLower = searchTerm.toLowerCase()
+    // Text search filter
+    if (searchTerm) {
       filtered = filtered.filter(
         (customer) =>
-          customer.name.toLowerCase().includes(searchLower) ||
+          customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
           customer.phone.includes(searchTerm) ||
-          customer.address?.toLowerCase().includes(searchLower),
+          customer.email?.toLowerCase().includes(searchTerm.toLowerCase()),
       )
     }
 
     // Status filter
-    if (filterStatus !== "all") {
-      filtered = filtered.filter((customer) => customer.paymentStatus === filterStatus)
+    if (statusFilter !== "all") {
+      filtered = filtered.filter((customer) => customer.status === statusFilter)
+    }
+
+    // Date filter
+    if (dateFilter.startDate || dateFilter.endDate) {
+      filtered = filtered.filter((customer) => {
+        let dateToCheck: Date
+
+        switch (dateFilter.mode) {
+          case "order":
+            dateToCheck = new Date(customer.orderDate)
+            break
+          case "collection":
+            dateToCheck = new Date(customer.collectionDate)
+            break
+          case "all":
+          default:
+            // Check both dates
+            const orderDate = new Date(customer.orderDate)
+            const collectionDate = new Date(customer.collectionDate)
+
+            const startMatch =
+              !dateFilter.startDate || orderDate >= dateFilter.startDate || collectionDate >= dateFilter.startDate
+
+            const endMatch =
+              !dateFilter.endDate || orderDate <= dateFilter.endDate || collectionDate <= dateFilter.endDate
+
+            return startMatch && endMatch
+        }
+
+        const startMatch = !dateFilter.startDate || dateToCheck >= dateFilter.startDate
+        const endMatch = !dateFilter.endDate || dateToCheck <= dateFilter.endDate
+
+        return startMatch && endMatch
+      })
     }
 
     setFilteredCustomers(filtered)
   }
 
-  const getStatusBadge = (status: string, advanceAmount?: number) => {
+  const clearDateFilter = () => {
+    setDateFilter({ mode: "all" })
+    setShowDateFilter(false)
+  }
+
+  const handleCollectionReminderClick = (customerId: string) => {
+    router.push(`/tailor/customer/${customerId}`)
+  }
+
+  const handleCollectionNotification = (count: number) => {
+    showCollectionReminderToast(count, () => {
+      // Find the first customer ready for collection and navigate to them
+      const readyCustomer = customers.find((c) => c.status === "completed")
+      if (readyCustomer) {
+        router.push(`/tailor/customer/${readyCustomer._id}`)
+      }
+    })
+  }
+
+  const getStatusColor = (status: string) => {
     switch (status) {
-      case "paid":
-        return <Badge className="status-paid text-white font-medium">✅ Fully Paid</Badge>
-      case "advance":
-        return (
-          <Badge className="status-pending text-white font-medium">
-            💰 Advance (₦{advanceAmount?.toLocaleString()})
-          </Badge>
-        )
+      case "pending":
+        return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400"
+      case "in-progress":
+        return "bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400"
+      case "completed":
+        return "bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400"
+      case "collected":
+        return "bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-400"
       default:
-        return <Badge className="status-overdue text-white font-medium">⏳ Not Paid</Badge>
+        return "bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-400"
     }
   }
 
-  const isOverdue = (expectedDate: string) => {
-    return new Date(expectedDate) < new Date()
-  }
-
-  const getUrgencyIndicator = (customer: Customer) => {
-    const daysUntil = Math.ceil(
-      (new Date(customer.expectedDate).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24),
-    )
-
-    if (daysUntil < 0 && customer.paymentStatus !== "paid") {
-      return <span className="text-red-400 text-xs font-medium">🚨 {Math.abs(daysUntil)} days overdue</span>
-    }
-    if (daysUntil <= 1 && customer.paymentStatus !== "paid") {
-      return (
-        <span className="text-yellow-400 text-xs font-medium">⚡ Due {daysUntil === 0 ? "today" : "tomorrow"}</span>
-      )
-    }
-    return null
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+    }).format(amount)
   }
 
   if (loading) {
     return (
-      <div className="min-h-screen modern-bg flex items-center justify-center">
-        <div className="text-center">
-          <div className="loading-spinner h-16 w-16 mx-auto mb-4"></div>
-          <p className="text-themed-muted text-lg">Loading your dashboard...</p>
-        </div>
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-brand-primary"></div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen modern-bg">
-      <CollectionReminder customers={customers} />
-
+    <div className="container mx-auto p-6 space-y-6 theme-transition">
       {/* Header */}
-      <div className="glass-card-dark shadow-lg border-b border-white/10 sticky top-0 z-40">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center space-y-4 md:space-y-0">
-            <div>
-              <h1 className="text-3xl font-bold text-themed gradient-text">Professional Dashboard</h1>
-              <p className="text-themed-muted text-sm mt-1">Manage your customers and orders efficiently</p>
-            </div>
-            <div className="flex items-center space-x-4">
-              <ThemeToggle variant="header" size="sm" />
-              <div className="relative">
-                <Bell className="h-6 w-6 text-themed-muted hover:text-themed transition-colors cursor-pointer" />
-                {stats.pendingOrders > 0 && (
-                  <span className="absolute -top-2 -right-2 notification-badge h-5 w-5 rounded-full text-xs flex items-center justify-center text-white font-bold">
-                    {stats.pendingOrders}
-                  </span>
-                )}
-              </div>
-              <div className="text-right">
-                <p className="text-sm text-themed-muted">Welcome back,</p>
-                <p className="font-semibold text-themed">{user?.name}</p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={logout}
-                className="glass-card text-themed hover:bg-white/20 border-white/30 bg-transparent"
-              >
-                <LogOut className="h-4 w-4 mr-2" />
-                Sign Out
-              </Button>
-            </div>
-          </div>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-foreground">Dashboard</h1>
+          <p className="text-muted-foreground">Manage your tailoring business</p>
+        </div>
+        <div className="flex gap-2">
+          <Button
+            onClick={() => router.push("/tailor/add-customer")}
+            className="bg-brand-primary hover:bg-brand-primary/90"
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Add Customer
+          </Button>
         </div>
       </div>
 
-      <div className="container mx-auto px-4 py-8">
-        {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <Card className="glass-card card-hover">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-themed">Total Customers</CardTitle>
-              <Users className="h-5 w-5 text-blue-300" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold text-themed mb-1">{stats.totalCustomers}</div>
-              <p className="text-xs text-themed-muted">Active customer base</p>
-            </CardContent>
-          </Card>
+      {/* Collection Reminder */}
+      <CollectionReminder
+        customers={customers.filter((c) => c.status === "completed")}
+        onCustomerClick={handleCollectionReminderClick}
+        onNotificationShow={handleCollectionNotification}
+      />
 
-          <Card className="glass-card card-hover">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-themed">Pending Orders</CardTitle>
-              <Clock className="h-5 w-5 text-yellow-300" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold text-yellow-300 mb-1">{stats.pendingOrders}</div>
-              <p className="text-xs text-themed-muted">Awaiting completion</p>
-            </CardContent>
-          </Card>
-
-          <Card className="glass-card card-hover">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-themed">Total Revenue</CardTitle>
-              <TrendingUp className="h-5 w-5 text-green-300" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold text-green-300 mb-1">₦{stats.totalRevenue.toLocaleString()}</div>
-              <p className="text-xs text-themed-muted">Completed payments</p>
-            </CardContent>
-          </Card>
-
-          <Card className="glass-card card-hover">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-themed">Advance Payments</CardTitle>
-              <DollarSign className="h-5 w-5 text-purple-300" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold text-purple-300 mb-1">₦{stats.advancePayments.toLocaleString()}</div>
-              <p className="text-xs text-themed-muted">Partial payments received</p>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Search and Filter Section */}
-        <Card className="glass-card mb-6">
-          <CardContent className="p-6">
-            <div className="flex flex-col lg:flex-row gap-4 items-center">
-              <div className="flex-1 w-full">
-                <div className="relative">
-                  <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-themed-muted" />
-                  <Input
-                    placeholder="Search customers by name, phone, or address..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-12 search-input h-12 text-themed placeholder:text-themed-muted pointer-events-auto"
-                  />
-                </div>
-              </div>
-              <div className="flex items-center space-x-2">
-                <Filter className="h-5 w-5 text-themed-muted" />
-                <div className="flex gap-2">
-                  {[
-                    { key: "all", label: "All", count: customers.length },
-                    { key: "paid", label: "Paid", count: customers.filter((c) => c.paymentStatus === "paid").length },
-                    {
-                      key: "advance",
-                      label: "Advance",
-                      count: customers.filter((c) => c.paymentStatus === "advance").length,
-                    },
-                    {
-                      key: "not_paid",
-                      label: "Unpaid",
-                      count: customers.filter((c) => c.paymentStatus === "not_paid").length,
-                    },
-                  ].map((filter) => (
-                    <Button
-                      key={filter.key}
-                      variant={filterStatus === filter.key ? "default" : "outline"}
-                      onClick={() => setFilterStatus(filter.key)}
-                      className={
-                        filterStatus === filter.key
-                          ? "glow-button text-sm pointer-events-auto cursor-pointer"
-                          : "glass-card text-themed hover:bg-white/20 border-white/30 text-sm pointer-events-auto cursor-pointer"
-                      }
-                      size="sm"
-                    >
-                      {filter.label} ({filter.count})
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Action Button */}
-        <div className="mb-6">
-          <Link href="/tailor/add-customer">
-            <Button className="glow-button text-base px-6 py-3 pointer-events-auto cursor-pointer">
-              <Plus className="h-5 w-5 mr-2" />
-              Add New Customer
-            </Button>
-          </Link>
-        </div>
-
-        {/* Customers Table */}
-        <Card className="glass-card">
-          <CardHeader>
-            <CardTitle className="text-themed gradient-text text-xl">Customer Management</CardTitle>
-            <CardDescription className="text-themed-muted">
-              {filteredCustomers.length > 0
-                ? `Showing ${filteredCustomers.length} of ${customers.length} customers`
-                : "No customers found matching your criteria"}
-            </CardDescription>
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <Card className="glass-card theme-transition">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Total Customers</CardTitle>
+            <Users className="h-4 w-4 text-brand-primary" />
           </CardHeader>
           <CardContent>
-            {filteredCustomers.length > 0 ? (
-              <div className="overflow-x-auto modern-table">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-white/10">
-                      <TableHead className="text-themed font-semibold">Customer</TableHead>
-                      <TableHead className="text-themed font-semibold">Contact</TableHead>
-                      <TableHead className="text-themed font-semibold">Order Date</TableHead>
-                      <TableHead className="text-themed font-semibold">Collection Date</TableHead>
-                      <TableHead className="text-themed font-semibold">Amount</TableHead>
-                      <TableHead className="text-themed font-semibold">Status</TableHead>
-                      <TableHead className="text-themed font-semibold">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredCustomers.map((customer) => (
-                      <TableRow key={customer._id} className="border-white/10 table-row">
-                        <TableCell className="font-medium text-themed">
-                          <div>
-                            <div className="font-semibold">{customer.name}</div>
-                            {getUrgencyIndicator(customer)}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-themed-muted">
-                          <div className="text-sm">
-                            <div>{customer.phone}</div>
-                            {customer.address && (
-                              <div className="text-themed-muted text-xs truncate max-w-32">{customer.address}</div>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-themed-muted">
-                          {new Date(customer.orderDate).toLocaleDateString()}
-                        </TableCell>
-                        <TableCell className="text-themed-muted">
-                          <span
-                            className={
-                              isOverdue(customer.expectedDate) && customer.paymentStatus !== "paid"
-                                ? "text-red-300 font-medium"
-                                : ""
-                            }
-                          >
-                            {new Date(customer.expectedDate).toLocaleDateString()}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-themed font-semibold">₦{customer.amount.toLocaleString()}</TableCell>
-                        <TableCell>{getStatusBadge(customer.paymentStatus, customer.advanceAmount)}</TableCell>
-                        <TableCell>
-                          <div className="flex space-x-2">
-                            <Link href={`/tailor/customer/${customer._id}`}>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="glass-card text-themed hover:bg-white/20 border-white/30 bg-transparent text-xs pointer-events-auto cursor-pointer"
-                              >
-                                View
-                              </Button>
-                            </Link>
-                            <Link href={`/tailor/customer/${customer._id}/edit`}>
-                              <Button size="sm" className="glow-button text-xs pointer-events-auto cursor-pointer">
-                                Edit
-                              </Button>
-                            </Link>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            ) : (
-              <div className="text-center py-12">
-                <Users className="h-16 w-16 text-themed-muted mx-auto mb-4" />
-                <h3 className="text-xl font-semibold text-themed mb-2">
-                  {searchTerm || filterStatus !== "all" ? "No customers found" : "No customers yet"}
-                </h3>
-                <p className="text-themed-muted mb-6">
-                  {searchTerm || filterStatus !== "all"
-                    ? "Try adjusting your search or filter criteria"
-                    : "Start by adding your first customer to begin managing your business"}
-                </p>
-                {!searchTerm && filterStatus === "all" && (
-                  <Link href="/tailor/add-customer">
-                    <Button className="glow-button">
-                      <Plus className="h-4 w-4 mr-2" />
-                      Add Your First Customer
-                    </Button>
-                  </Link>
-                )}
-              </div>
-            )}
+            <div className="text-2xl font-bold">{totalCustomers}</div>
+            <p className="text-xs text-muted-foreground">Active customers</p>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-card theme-transition">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Pending Orders</CardTitle>
+            <Clock className="h-4 w-4 text-yellow-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{pendingOrders}</div>
+            <p className="text-xs text-muted-foreground">Awaiting start</p>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-card theme-transition">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">In Progress</CardTitle>
+            <Package className="h-4 w-4 text-blue-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{inProgressOrders}</div>
+            <p className="text-xs text-muted-foreground">Being worked on</p>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-card theme-transition">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Ready for Collection</CardTitle>
+            <TrendingUp className="h-4 w-4 text-green-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{readyForCollection}</div>
+            <p className="text-xs text-muted-foreground">Completed orders</p>
           </CardContent>
         </Card>
       </div>
+
+      {/* Filters */}
+      <Card className="glass-card theme-transition">
+        <CardHeader>
+          <CardTitle>Customer Management</CardTitle>
+          <CardDescription>Search and filter your customers</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-col sm:flex-row gap-4">
+            {/* Search */}
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
+              <Input
+                placeholder="Search customers..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10 focus-brand"
+              />
+            </div>
+
+            {/* Status Filter */}
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="w-full sm:w-48 focus-brand">
+                <SelectValue placeholder="Filter by status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="in-progress">In Progress</SelectItem>
+                <SelectItem value="completed">Completed</SelectItem>
+                <SelectItem value="collected">Collected</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* Date Filter */}
+            <Popover open={showDateFilter} onOpenChange={setShowDateFilter}>
+              <PopoverTrigger asChild>
+                <Button variant="outline" className="w-full sm:w-48 justify-start focus-brand bg-transparent">
+                  <CalendarIcon className="mr-2 h-4 w-4" />
+                  {dateFilter.startDate || dateFilter.endDate ? (
+                    <span className="truncate">
+                      {dateFilter.startDate && format(dateFilter.startDate, "MMM dd")}
+                      {dateFilter.startDate && dateFilter.endDate && " - "}
+                      {dateFilter.endDate && format(dateFilter.endDate, "MMM dd")}
+                    </span>
+                  ) : (
+                    "Filter by date"
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-80 p-4" align="end">
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="font-medium mb-2">Date Filter Mode</h4>
+                    <Select
+                      value={dateFilter.mode}
+                      onValueChange={(value: "all" | "order" | "collection") =>
+                        setDateFilter((prev) => ({ ...prev, mode: value }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Dates</SelectItem>
+                        <SelectItem value="order">Order Date</SelectItem>
+                        <SelectItem value="collection">Collection Date</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <Separator />
+
+                  <div>
+                    <h4 className="font-medium mb-2">Start Date</h4>
+                    <Calendar
+                      mode="single"
+                      selected={dateFilter.startDate}
+                      onSelect={(date) => setDateFilter((prev) => ({ ...prev, startDate: date }))}
+                      className="rounded-md border"
+                    />
+                  </div>
+
+                  <div>
+                    <h4 className="font-medium mb-2">End Date</h4>
+                    <Calendar
+                      mode="single"
+                      selected={dateFilter.endDate}
+                      onSelect={(date) => setDateFilter((prev) => ({ ...prev, endDate: date }))}
+                      className="rounded-md border"
+                    />
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={clearDateFilter} className="flex-1 bg-transparent">
+                      Clear
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => setShowDateFilter(false)}
+                      className="flex-1 bg-brand-primary hover:bg-brand-primary/90"
+                    >
+                      Apply
+                    </Button>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+
+            {/* Clear Filters */}
+            {(searchTerm || statusFilter !== "all" || dateFilter.startDate || dateFilter.endDate) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setSearchTerm("")
+                  setStatusFilter("all")
+                  clearDateFilter()
+                }}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4 mr-1" />
+                Clear All
+              </Button>
+            )}
+          </div>
+
+          {/* Active Filters Display */}
+          {(searchTerm || statusFilter !== "all" || dateFilter.startDate || dateFilter.endDate) && (
+            <div className="flex flex-wrap gap-2">
+              {searchTerm && (
+                <Badge variant="secondary" className="gap-1">
+                  Search: {searchTerm}
+                  <X className="h-3 w-3 cursor-pointer" onClick={() => setSearchTerm("")} />
+                </Badge>
+              )}
+              {statusFilter !== "all" && (
+                <Badge variant="secondary" className="gap-1">
+                  Status: {statusFilter}
+                  <X className="h-3 w-3 cursor-pointer" onClick={() => setStatusFilter("all")} />
+                </Badge>
+              )}
+              {(dateFilter.startDate || dateFilter.endDate) && (
+                <Badge variant="secondary" className="gap-1">
+                  Date: {dateFilter.mode}
+                  {dateFilter.startDate && ` from ${format(dateFilter.startDate, "MMM dd")}`}
+                  {dateFilter.endDate && ` to ${format(dateFilter.endDate, "MMM dd")}`}
+                  <X className="h-3 w-3 cursor-pointer" onClick={clearDateFilter} />
+                </Badge>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Customer List */}
+      <Card className="glass-card theme-transition">
+        <CardHeader>
+          <CardTitle>Customers ({filteredCustomers.length})</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {filteredCustomers.length === 0 ? (
+            <div className="text-center py-8">
+              <Users className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-foreground mb-2">
+                {customers.length === 0 ? "No customers yet" : "No customers match your filters"}
+              </h3>
+              <p className="text-muted-foreground mb-4">
+                {customers.length === 0
+                  ? "Add your first customer to get started"
+                  : "Try adjusting your search or filter criteria"}
+              </p>
+              {customers.length === 0 && (
+                <Button
+                  onClick={() => router.push("/tailor/add-customer")}
+                  className="bg-brand-primary hover:bg-brand-primary/90"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Customer
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {filteredCustomers.map((customer) => (
+                <div
+                  key={customer._id}
+                  className="border rounded-lg p-4 hover:bg-muted/50 transition-colors theme-transition"
+                >
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <h3 className="font-semibold text-foreground">{customer.name}</h3>
+                        <Badge className={cn("text-xs", getStatusColor(customer.status))}>
+                          {customer.status.replace("-", " ")}
+                        </Badge>
+                      </div>
+                      <div className="text-sm text-muted-foreground space-y-1">
+                        <p>📞 {customer.phone}</p>
+                        {customer.email && <p>✉️ {customer.email}</p>}
+                        <p>📅 Order: {format(new Date(customer.orderDate), "MMM dd, yyyy")}</p>
+                        <p>🎯 Collection: {format(new Date(customer.collectionDate), "MMM dd, yyyy")}</p>
+                        <p>
+                          💰 Total: {formatCurrency(customer.totalAmount)} | Paid: {formatCurrency(customer.amountPaid)}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => router.push(`/tailor/customer/${customer._id}`)}
+                        className="focus-brand"
+                      >
+                        <Eye className="h-4 w-4 mr-1" />
+                        View
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => router.push(`/tailor/customer/${customer._id}/edit`)}
+                        className="focus-brand"
+                      >
+                        <Edit className="h-4 w-4 mr-1" />
+                        Edit
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* WhatsApp Contact */}
+      <WhatsAppContact />
     </div>
   )
 }

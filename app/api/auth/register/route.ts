@@ -2,8 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { MongoClient } from "mongodb"
 import bcrypt from "bcryptjs"
 
-const MONGODB_URI =
-  "mongodb+srv://ymohd0627:Lioness@cluster0.v9mgnvb.mongodb.net/tailor?retryWrites=true&w=majority&appName=Cluster0"
+const MONGODB_URI = process.env.MONGODB_URI || ""
 
 export async function POST(request: NextRequest) {
   try {
@@ -38,7 +37,14 @@ export async function POST(request: NextRequest) {
     await db.collection("users").insertOne(user)
     await client.close()
 
-    return NextResponse.json({ message: "User registered successfully" }, { status: 201 })
+    return NextResponse.json(
+      {
+        message: "Account created successfully! Your account is pending approval. You will be notified once approved.",
+        success: true,
+        accountCreated: true,
+      },
+      { status: 201 },
+    )
   } catch (error) {
     console.error("Registration error:", error)
     return NextResponse.json({ message: "Internal server error" }, { status: 500 })
