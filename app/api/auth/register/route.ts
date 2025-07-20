@@ -1,123 +1,46 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { MongoClient } from "mongodb"
 import bcrypt from "bcryptjs"
-import jwt from "jsonwebtoken"
 
-const MONGODB_URI = process.env.MONGODB_URI!
-const JWT_SECRET = process.env.JWT_SECRET!
+const MONGODB_URI =
+  "mongodb+srv://ymohd0627:Lioness@cluster0.v9mgnvb.mongodb.net/tailor?retryWrites=true&w=majority&appName=Cluster0"
 
 export async function POST(request: NextRequest) {
   try {
-    const { name, email, password, phone, businessName, businessAddress } = await request.json()
-
-    // Validate required fields
-    if (!name || !email || !password || !phone || !businessName) {
-      return NextResponse.json({ error: "All fields are required" }, { status: 400 })
-    }
-
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (!emailRegex.test(email)) {
-      return NextResponse.json({ error: "Invalid email format" }, { status: 400 })
-    }
-
-    // Validate password strength
-    if (password.length < 6) {
-      return NextResponse.json({ error: "Password must be at least 6 characters long" }, { status: 400 })
-    }
+    const { name, email, phone, password, gender } = await request.json()
 
     const client = new MongoClient(MONGODB_URI)
     await client.connect()
-
-    const db = client.db("tailor_management")
-    const usersCollection = db.collection("users")
+    const db = client.db("tailor")
 
     // Check if user already exists
-    const existingUser = await usersCollection.findOne({ email })
+    const existingUser = await db.collection("users").findOne({ email })
     if (existingUser) {
       await client.close()
-      return NextResponse.json({ error: "User with this email already exists" }, { status: 409 })
+      return NextResponse.json({ message: "User already exists" }, { status: 400 })
     }
 
     // Hash password
-    const saltRounds = 12
-    const hashedPassword = await bcrypt.hash(password, saltRounds)
+    const hashedPassword = await bcrypt.hash(password, 12)
 
-    // Create new user
-    const newUser = {
+    // Create user
+    const user = {
       name,
-      email: email.toLowerCase(),
-      password: hashedPassword,
+      email,
       phone,
-      businessName,
-      businessAddress: businessAddress || "",
+      password: hashedPassword,
       role: "tailor",
-      status: "pending", // Admin needs to approve
+      status: "pending",
+      gender,
       createdAt: new Date(),
-      updatedAt: new Date(),
-      emailVerified: false,
-      lastLogin: null,
-      profileImage: null,
-      settings: {
-        notifications: {
-          email: true,
-          sms: false,
-          push: true,
-        },
-        theme: "light",
-        language: "en",
-      },
     }
 
-    const result = await usersCollection.insertOne(newUser)
+    await db.collection("users").insertOne(user)
     await client.close()
 
-    // Generate JWT token for the new user
-    const token = jwt.sign(
-      {
-        userId: result.insertedId,
-        email: email.toLowerCase(),
-        role: "tailor",
-        status: "pending",
-      },
-      JWT_SECRET,
-      { expiresIn: "7d" },
-    )
-
-    // Create response with success message for toast
-    const response = NextResponse.json(
-      {
-        message: "Account created successfully! Please wait for admin approval.",
-        user: {
-          id: result.insertedId,
-          name,
-          email: email.toLowerCase(),
-          role: "tailor",
-          status: "pending",
-        },
-        showAccountCreationToast: true,
-        toastData: {
-          type: "success",
-          title: "🎉 Account Created Successfully!",
-          description: `Welcome ${name}! Your account has been created with email: ${email}. Please wait for admin approval to access your dashboard.`,
-          persistent: true,
-        },
-      },
-      { status: 201 },
-    )
-
-    // Set HTTP-only cookie for authentication
-    response.cookies.set("auth-token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-      path: "/",
-    })
-
-    return response
+    return NextResponse.json({ message: "User registered successfully" }, { status: 201 })
   } catch (error) {
     console.error("Registration error:", error)
-    return NextResponse.json({ error: "Internal server error. Please try again later." }, { status: 500 })
+    return NextResponse.json({ message: "Internal server error" }, { status: 500 })
   }
 }
